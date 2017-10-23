@@ -1,0 +1,187 @@
+---
+title: "Coursera - Practical Machine Learning Project"
+author: "Peggy Lindner"
+date: "October 22, 2017"
+output:
+  html_document: default
+  html_notebook: default
+---
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/',
+                      warning=FALSE, message=FALSE)
+```
+##  I. Overview
+
+This is the final report of the Peer Assessment project from Coursera’s course Practical Machine Learning, as part of the Specialization in Data Science. It was built in RStudio in R Markdwon format, and is meant to be published in html format.
+
+## II. Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.
+
+In this project, we will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+The goal of our project is to predict the manner in which they did the exercise.
+
+##  III. Preparations
+
+### a) Dataset description
+The training data for this project are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from http://groupware.les.inf.puc-rio.br/har. Full source:
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. “Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human ’13)”. Stuttgart, Germany: ACM SIGCHI, 2013.
+
+We'd like to thank the above mentioned authors for allowing to use their data.
+
+A short description of the datasets content from the authors’ website:
+
+“Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. We made sure that all participants could easily simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg)."
+
+### b) Setting up
+We first load the required libraries and set a seed variable.
+
+```{r libraries}
+library(caret)
+library(rpart)
+library(rattle)
+set.seed(12345)
+```
+
+### c) Data loading
+
+We load the datasets from the URL provided above and have a quick look.
+```{r dataloading}
+trainUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+trainData <- read.csv(url(trainUrl))
+testUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+testData <- read.csv(url(testUrl))
+dim(trainData); dim(testData)
+```
+The training dataset has 19622 observations and 160 variables, and the testing data set contains 20 observations and the same variables as the training set. We noticed a couple of variables with a lot of NA values, that suggests some data cleaning.
+
+#### Cleaning the data
+First we remove variables that contain identification information (columns 1 to 7) since they don't have little predicting power for the outcome varaiable.
+```{r cleanidentifcation}
+trainData <- trainData[, -(1:7)]
+testData  <- testData[, -(1:7)]
+dim(trainData); dim(testData)
+```
+We then remove NearZero variance variables.
+```{r cleannearzero}
+nzv <- nearZeroVar(trainData)
+trainData <- trainData[, -nzv]
+testData <- testData[, -nzv]
+dim(trainData); dim(testData)
+```
+
+Last but not least we remove variables with mostly NA values.
+```{r cleanna}
+lotsofNA    <- sapply(trainData, function(x) mean(is.na(x))) > 0.95
+trainData <- trainData[, lotsofNA==FALSE]
+testData  <- testData[, lotsofNA==FALSE]
+dim(trainData); dim(testData)
+```
+
+After the cleaning is done, we end up with 53 variables.
+
+The training dataset is then partinioned in 2 to create a training set (75% of the data) for the modeling process and a testing set (with the remaining 25%) for the validations. The original testing dataset is not changed and will only be used for the final predictions. We are trying to predict the outcome of the variable classe in the training set.
+```{r part}
+inTrain <- createDataPartition(trainData$classe, p=0.75, list=FALSE)
+training <- trainData[inTrain, ]
+validation <- trainData[-inTrain, ]
+dim(training); dim(validation)
+```
+
+### IV. Prediction Models
+Three methods will be used to build models (in the training dataset) and the best one (with higher accuracy when applied to the validation dataset) will be used for the final predictions. The methods are: Classification Tree, Random Forest and Gradient Boosted Machine (GBM). 
+
+In order to limit the effects of overfitting, and improve the efficicency of the models, we will use cross-validation. In practice, k=5k=5 or k=10k=10 when doing k-fold cross validation. Here we will do 5-fold cross validation (default setting in trainControl function is 10) when implementing the algorithm in order to save computation time.
+
+#### a) Decision Tree
+```{r decisontree}
+# build model
+trControl <- trainControl(method="cv", number=5)
+modelFitDecTree <- train(classe~., data=training, method="rpart", trControl=trControl)
+# print model
+fancyRpartPlot(modelFitDecTree$finalModel)
+```
+```{r predition_decisiontree}
+# predict outcomes using validation set
+predictDecTree <- predict(modelFitDecTree, newdata=validation)
+confMatDecTree <- confusionMatrix(validation$classe, predictDecTree)
+confMatDecTree$table
+```
+```{r prediction_decisiontree_acc}
+confMatDecTree$overall[1]
+```
+
+The accuracy of this first model is very low (about 54%). This means that the outcome variable classe will not be predicted very well by the other predictors.
+
+### b) Random Forest
+```{r randomforest}
+# build model
+modelFitRandForest <- train(classe ~ ., data=training, method="rf", trControl=trControl)
+# print model
+print(modelFitRandForest, digits = 4)
+plot(modelFitRandForest,main="Accuracy of Random forest model by number of predictors")
+```
+
+```{r prediction_randomforest}
+# predict outcomes using validation set
+predictRF <- predict(modelFitRandForest, validation)
+confMatRF <- confusionMatrix(validation$classe, predictRF)
+confMatRF$table
+```
+
+```{r prediction_randomforest_acc}
+confMatRF$overall[1]
+```
+
+With Random Forest we get an accuracy of 99.3% using 5-fold cross-validation. This is pretty good, but let's compare it to Gradient Boosting.
+
+We can see that the optimal number of predictors, i.e. the number of predictors giving the highest accuracy, is 27. There is no significal increase of the accuracy with 2 predictors and 27, but the slope decreases more with more than 27 predictors (even if the accuracy is still very good). The fact that not the accuracy is not getting worse with all the available predictors suggests, that there may be some dependencies between them.
+
+### c) Gradient Boosting
+
+```{r gradientboosting}
+# build model
+modelFitGBM <- train(classe~., data=training, method="gbm", trControl=trControl, verbose=FALSE)
+# print model
+print(modelFitGBM)
+plot(modelFitGBM)
+```
+
+```{r prediction_gradientboosting}
+# predict outcomes using validation set
+predictGBM <- predict(modelFitGBM, validation)
+confMatGBM <- confusionMatrix(validation$classe, predictGBM)
+confMatGBM$table
+```
+
+```{r prediction_gradientboosting_acc}
+confMatGBM$overall[1]
+``` 
+
+The accuracy for the Gradient boosting model using 5-fold cross-validation is 95.9%.
+
+### Final predictions on testing data
+For this dataset, the Random Forest method performs best. The accuracy rate is 0.993. This may be due to the fact that many predictors are highly correlated. Random forests chooses a subset of predictors at each split and decorrelate the trees. This leads to high accuracy, although this algorithm is sometimes difficult to interpret and computationally inefficient.
+
+The expected out-of-sample error is calculated as 1 - accuracy for predictions made against the cross-validation set. The estimated out-of-sample error is 0.7%. Our Test data set comprises 20 cases. With an accuracy at 99.3% on our cross-validation data, we can expect that very few, or none, of the test samples will be missclassified.
+
+We will use Random Forests to predict the outcome variable classe for the original testing set.
+```{r final}
+prediction <- predict(modelFitRandForest, testData)
+prediction
+```
+
+
+
+
